@@ -1,0 +1,112 @@
+import os import sys import time import random import csv import logging
+
+Fallback imports
+
+try: from playwright.sync_api import sync_playwright except ImportError: logging.error("❌ Playwright is not installed. Install via 'pip install playwright'. Exiting.") sys.exit(1)
+
+try: from playwright_stealth import stealth_sync STEALTH_AVAILABLE = True logging.info("🛡️ Stealth module loaded successfully.") except ImportError: STEALTH_AVAILABLE = False logging.warning("⚠️ playwright_stealth not found—continuing without stealth.")
+
+Configure logger
+
+tlogging = logging.getLogger(name) logging.basicConfig( level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s" )
+
+USER_AGENTS = [ "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0 Safari/537.36", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/110.0 Safari/537.36", ]
+
+def read_csv(file_name="search_data.csv"): logging.info("📂 Checking CSV file: %s", file_name) if not os.path.exists(file_name): logging.error("❌ CSV file '%s' not found. Exiting.", file_name) sys.exit(1)
+
+data = []
+try:
+    with open(file_name, "r", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            entry = {
+                "search_keyword": row.get("search_keyword", ""),
+                "target_url": row.get("target_url", ""),
+                "nav_texts": [row.get(f"nav_text_{i}") for i in range(1, 6) if row.get(f"nav_text_{i}")],
+                "texts_by_page": {
+                    "Home": row.get("home_texts", "").split("|") if row.get("home_texts") else [],
+                    "Services": row.get("services_texts", "").split("|") if row.get("services_texts") else [],
+                    "Blog": row.get("blog_texts", "").split("|") if row.get("blog_texts") else [],
+                }
+            }
+            data.append(entry)
+    logging.info("✅ Loaded %d entries from CSV.", len(data))
+except Exception as e:
+    logging.error("❌ Error reading CSV: %s", e)
+    sys.exit(1)
+return data
+
+def scroll_page(page, direction="down", loops=10): logging.info("🔄 Scrolling %s for %d loops.", direction, loops) for _ in range(loops): delta = random.randint(200, 350) * (1 if direction == "down" else -1) page.mouse.wheel(0, delta) time.sleep(random.uniform(0.7, 1.2))
+
+def match_and_click_target_text(page, target_text): logging.info("🔍 Looking for text: %s", target_text) try: elements = page.locator(f"text={target_text}") if elements.count() > 0: elements.first.scroll_into_view_if_needed() time.sleep(1) elements.first.click(timeout=5000) logging.info("🟢 Clicked on matched text: %s", target_text) return True else: logging.warning("⚠️ Text not found: %s", target_text) except Exception as e: logging.error("❌ Failed to click '%s': %s", target_text, e) return False
+
+def launch_browser(data_entry): keyword = data_entry["search_keyword"] target_url = data_entry["target_url"] nav_texts = data_entry["nav_texts"] texts_by_page = data_entry["texts_by_page"]
+
+logging.info("🚀 Launching browser for keyword: %s", keyword)
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        context = browser.new_context(
+            user_agent=random.choice(USER_AGENTS)
+        )
+        page = context.new_page()
+
+        if STEALTH_AVAILABLE:
+            try:
+                stealth_sync(page)
+                logging.info("🛡️ Stealth mode applied.")
+            except Exception as e:
+                logging.warning("⚠️ Stealth application failed: %s", e)
+
+        selected_texts = {
+            k: random.choice(v) for k, v in texts_by_page.items() if v
+        }
+        logging.info("🎯 Selected texts: %s", selected_texts)
+
+        logging.info("🔎 Searching Google for: %s", keyword)
+        page.goto("https://www.google.com", timeout=15000)
+        time.sleep(random.uniform(3, 5))
+        page.fill('textarea[name="q"]', keyword)
+        page.keyboard.press("Enter")
+        page.wait_for_load_state('networkidle')
+        time.sleep(random.uniform(3, 5))
+
+        # Click target result
+        for link in page.locator("a").all():
+            href = link.get_attribute("href") or ""
+            if target_url in href:
+                logging.info("✅ Found result: %s", href)
+                try:
+                    link.click(timeout=6000)
+                except Exception:
+                    logging.warning("⚠️ Click failed, trying direct goto.")
+                    page.goto(href, timeout=10000)
+                break
+
+        time.sleep(3)
+        scroll_page(page, "down", loops=6)
+        if "Home" in selected_texts:
+            if match_and_click_target_text(page, selected_texts["Home"]):
+                scroll_page(page, "down", loops=6)
+                scroll_page(page, "up", loops=5)
+
+        for header in random.sample(nav_texts, k=min(3, len(nav_texts))):
+            logging.info("🔗 Navigating to header: %s", header)
+            try:
+                page.locator(f'a:has-text("{header}")').first.click(timeout=5000)
+                time.sleep(random.uniform(3, 5))
+                scroll_page(page, "down", loops=6)
+                if header in selected_texts:
+                    match_and_click_target_text(page, selected_texts[header])
+            except Exception as e:
+                logging.warning("⚠️ Could not visit %s: %s", header, e)
+
+        logging.info("🏁 Run completed.")
+        browser.close()
+except Exception as e:
+    logging.error("💥 Browser launch or run failed: %s", e, exc_info=True)
+
+def main(): logging.info("🎬 Starting automation...") try: entries = read_csv() for entry in entries: launch_browser(entry) except Exception as e: logging.error("💥 Unexpected error: %s", e, exc_info=True) logging.info("🔚 Automation finished.")
+
+if name == "main": # Ensure running in console main()
+
